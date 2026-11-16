@@ -1,7 +1,8 @@
-// Pantalla de la pasarela con la identidad visual de la app móvil:
+// Pantalla del nodo (pasarela o módem) con la identidad visual de la app móvil:
 //
 //   ┌────────────────────────────┐
-//   │▓LoRa P2P▓▓▓▓▓▓▓▓▓PASARELA▓│  barra superior (en la app, la barra verde)
+//   │▓LoRa P2P▓▓▓▓▓▓▓▓▓PASARELA▓│  barra superior (en la app, la barra verde);
+//   │                            │  en modo módem: «MÓDEM 87%»
 //   │● Panel conectado           │  franja de estado (como «● Módem conectado»)
 //   │╭──────────────────────────╮│
 //   │ SOS               [ROJA]   │  tarjeta de la última trama, con el chip de
@@ -58,7 +59,7 @@ void textoCentrado(const char *texto, int base) {
   oled.drawUTF8((ANCHO - oled.getUTF8Width(texto)) / 2, base, texto);
 }
 
-void encabezado() {
+void encabezado(const char *modo, int bateria) {
   oled.setDrawColor(1);
   oled.drawBox(0, 0, ANCHO, 13);
   oled.setDrawColor(0);
@@ -74,19 +75,24 @@ void encabezado() {
   oled.drawPixel(x + 3, 2);
   oled.drawPixel(x + 3, 3);
   oled.setFont(u8g2_font_5x7_tf);
-  const char *modo = "PASARELA";
-  oled.drawUTF8(ANCHO - 3 - oled.getUTF8Width(modo), 9, modo);
+  char derecha[20];
+  if (bateria >= 0) {
+    snprintf(derecha, sizeof derecha, "%s %d%%", modo, bateria);
+  } else {
+    snprintf(derecha, sizeof derecha, "%s", modo);
+  }
+  oled.drawUTF8(ANCHO - 3 - oled.getUTF8Width(derecha), 9, derecha);
   oled.setDrawColor(1);
 }
 
-void franjaEstado(bool panelConectado) {
+void franjaEstado(bool conectado, const char *texto) {
   oled.setFont(u8g2_font_6x10_tf);
-  if (panelConectado) {
+  if (conectado) {
     oled.drawDisc(4, 19, 2);
   } else {
     oled.drawCircle(4, 19, 2);
   }
-  oled.drawUTF8(10, 23, panelConectado ? "Panel conectado" : "Panel sin conexión");
+  oled.drawUTF8(10, 23, texto);
 }
 
 void formatearEdad(char *buf, size_t n, uint32_t ms) {
@@ -100,12 +106,17 @@ void formatearEdad(char *buf, size_t n, uint32_t ms) {
   }
 }
 
-void tarjetaEsperando(const char *radio) {
+void tarjetaEsperando(const char *radio, const char *nombre) {
   oled.drawRFrame(0, 27, ANCHO, 26, 3);
   oled.setFont(u8g2_font_6x10_tf);
   textoCentrado("Escuchando la red", 39);
   char linea[40];
-  snprintf(linea, sizeof linea, "%s · %.0f MHz · SF%u", radio, FRECUENCIA_MHZ, FACTOR_DISPERSION);
+  if (nombre != nullptr) {
+    // Módem: el nombre con el que el teléfono lo encuentra por Bluetooth.
+    snprintf(linea, sizeof linea, "%s · %s · SF%u", nombre, radio, FACTOR_DISPERSION);
+  } else {
+    snprintf(linea, sizeof linea, "%s · %.0f MHz · SF%u", radio, FRECUENCIA_MHZ, FACTOR_DISPERSION);
+  }
   oled.setFont(u8g2_font_5x7_tf);
   textoCentrado(linea, 49);
 }
@@ -151,7 +162,7 @@ void tarjetaTrama(const UltimaTrama &t) {
   oled.setDrawColor(1);
 }
 
-void barraInferior(const EstadoPasarela &e) {
+void barraInferior(const EstadoPantalla &e) {
   oled.drawHLine(0, 55, ANCHO);
   oled.drawVLine(42, 56, 8);
   oled.drawVLine(85, 56, 8);
@@ -180,10 +191,10 @@ bool pantallaIniciar() {
   return hayPantalla;
 }
 
-void pantallaMensaje(const char *titulo, const char *detalle) {
+void pantallaMensaje(const char *modo, const char *titulo, const char *detalle) {
   if (!hayPantalla) return;
   oled.clearBuffer();
-  encabezado();
+  encabezado(modo, -1);
   oled.setFont(u8g2_font_7x13B_tf);
   textoCentrado(titulo, 36);
   oled.setFont(u8g2_font_5x7_tf);
@@ -191,15 +202,15 @@ void pantallaMensaje(const char *titulo, const char *detalle) {
   oled.sendBuffer();
 }
 
-void pantallaActualizar(const EstadoPasarela &e) {
+void pantallaActualizar(const EstadoPantalla &e) {
   if (!hayPantalla) return;
   oled.clearBuffer();
-  encabezado();
-  franjaEstado(e.panelConectado);
+  encabezado(e.modo, e.bateria);
+  franjaEstado(e.conectado, e.textoEnlace);
   if (e.ultima.hay) {
     tarjetaTrama(e.ultima);
   } else {
-    tarjetaEsperando(e.radio);
+    tarjetaEsperando(e.radio, e.nombre);
   }
   barraInferior(e);
   oled.sendBuffer();

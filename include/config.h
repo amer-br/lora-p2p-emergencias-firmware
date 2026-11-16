@@ -42,5 +42,13 @@ constexpr uint32_t INTERVALO_ESTADO_MS = 30000;
 // Sin latido durante este tiempo, la pantalla muestra «Panel sin conexión».
 constexpr uint32_t PANEL_SIN_LATIDO_MS = 25000;
 
-// --- Pantalla ------------------------------------------------------------------------
+// --- Pantalla y batería --------------------------------------------------------------
 constexpr uint32_t INTERVALO_PANTALLA_MS = 500;
+constexpr uint32_t INTERVALO_BATERIA_MS = 10000;
+
+// --- Modo módem: Bluetooth ------------------------------------------------------------
+// 1: el teléfono debe emparejarse con el módem antes de usarlo (SRS 3.1.4,
+// emparejamiento estándar con vinculación). Se deja en 0 para las primeras
+// pruebas, porque el emparejamiento agrega un diálogo en el teléfono y es
+// una fuente común de fallas; activarlo antes de los simulacros.
+#define BLE_REQUIERE_CIFRADO 0

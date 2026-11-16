@@ -1,19 +1,16 @@
-// Firmware del T-Beam v1.2 en modo pasarela.
+// Firmware del T-Beam v1.2 (AXP2101) para la red LoRa de emergencias.
 //
-// La pasarela es un nodo fijo de la red LoRa conectado por USB a la
-// computadora del panel. Por el puerto serie intercambia una línea JSON por
-// trama con el puente de radio (PanelCampus/puente_radio):
+// Hay dos modos, que comparten este archivo (radio, malla y pantalla) y solo
+// cambian el enlace (ver enlace.h):
+//   * pasarela (pio run -e pasarela): nodo fijo conectado por USB al puente
+//     de radio del panel (enlace_serie.cpp);
+//   * módem (pio run -e modem): nodo de bolsillo conectado por BLE a la app
+//     del teléfono (enlace_ble.cpp).
 //
-//   T-Beam -> puente: {"hex":"0BADCAFE...","rssi":-102,"snr":-3.0}
-//   puente -> T-Beam: {"hex":"..."}
-//
-// Las demás líneas que imprime (empiezan con '#') son informativas y el
-// puente las ignora.
-//
-// Como cualquier nodo, también retransmite las tramas que escucha
-// (inundación controlada: descarte de duplicados por Msg_ID, TTL y retardo
-// aleatorio). No interpreta el contenido de las tramas (SRS, supuesto S1):
-// el CRC-16 del protocolo lo validan el panel y la app.
+// En los dos modos el T-Beam retransmite lo que escucha (inundación
+// controlada: descarte de duplicados por Msg_ID, TTL y retardo aleatorio).
+// No interpreta el contenido de las tramas (SRS, supuesto S1): el CRC-16 del
+// protocolo lo validan el panel y la app.
 //
 // El transceptor se detecta al arrancar: el T-Beam v1.2 se vende con SX1262
 // o con SX1276 y ambos comparten los pines CS y RST.
@@ -25,10 +22,11 @@
 #include <XPowersLib.h>
 
 #include "config.h"
+#include "enlace.h"
 #include "pantalla.h"
 
-#ifndef MODO_PASARELA
-#error "Por ahora solo existe el modo pasarela: compila con -DMODO_PASARELA (pio run -e pasarela)."
+#if !defined(MODO_PASARELA) && !defined(MODO_MODEM)
+#error "Compila con pio run -e pasarela o pio run -e modem."
 #endif
 
 namespace {
@@ -48,6 +46,7 @@ constexpr int SX1276_DIO0 = 26;
 constexpr int SX1276_DIO1 = 33;
 
 XPowersAXP2101 pmu;
+bool hayPmu = false;
 PhysicalLayer *radio = nullptr;
 const char *nombreRadio = "ninguno";
 
@@ -56,11 +55,12 @@ void IRAM_ATTR alRecibir() { hayPaquete = true; }
 
 struct Contadores {
   uint32_t recibidas = 0, duplicadas = 0, errores = 0, retransmitidas = 0,
-           desdePanel = 0, enviadas = 0, fallidas = 0, colaLlena = 0;
+           delEnlace = 0, enviadas = 0, fallidas = 0, colaLlena = 0;
 } cuenta;
 
 UltimaTrama ultimaTrama;
-uint32_t ultimoLatido = 0;  // millis() del último {"ping"} del puente; 0 = nunca
+int bateria = -1;  // % o -1 sin batería
+bool cargando = false;
 
 // --- Memoria de Msg_ID ya vistos -------------------------------------------------
 struct Visto {
@@ -96,17 +96,18 @@ struct Pendiente {
 };
 Pendiente cola[COLA_SALIDA];
 
-void encolar(const uint8_t *datos, size_t largo, uint32_t retardoMs) {
+bool encolar(const uint8_t *datos, size_t largo, uint32_t retardoMs) {
   for (Pendiente &p : cola) {
     if (p.usada) continue;
     memcpy(p.datos, datos, largo);
     p.largo = largo;
     p.momento = millis() + retardoMs;
     p.usada = true;
-    return;
+    return true;
   }
   cuenta.colaLlena++;
   Serial.println("# Cola de salida llena: se descarta una trama");
+  return false;
 }
 
 uint32_t retardoAleatorio() {
@@ -116,12 +117,27 @@ uint32_t retardoAleatorio() {
 // --- Energía y radio ---------------------------------------------------------------
 bool iniciarEnergia() {
   if (!pmu.begin(Wire, AXP2101_SLAVE_ADDRESS, PIN_SDA, PIN_SCL)) return false;
-  // ALDO2 alimenta el transceptor LoRa; ALDO3, el GNSS, que la pasarela no usa.
+  // ALDO2 alimenta el transceptor LoRa; ALDO3, el GNSS, que no se usa (la app
+  // toma la posición del teléfono).
   pmu.setALDO2Voltage(3300);
   pmu.enableALDO2();
   pmu.disableALDO3();
+  // El T-Beam v1.2 no tiene termistor en la batería: sin esto, el AXP2101
+  // puede impedir la carga.
+  pmu.disableTSPinMeasure();
+  pmu.enableBattDetection();
+  pmu.enableBattVoltageMeasure();
   delay(20);
   return true;
+}
+
+void leerBateria() {
+  static uint32_t ultimo = 0;
+  if (!hayPmu || (ultimo != 0 && millis() - ultimo < INTERVALO_BATERIA_MS)) return;
+  ultimo = millis() | 1;
+  bateria = pmu.isBatteryConnect() ? constrain(int(pmu.getBatteryPercent()), 0, 100) : -1;
+  cargando = pmu.isCharging();
+  enlaceInformarBateria(bateria, cargando);
 }
 
 bool iniciarSX1262() {
@@ -161,12 +177,6 @@ void escuchar() {
 }
 
 // --- Recepción por radio -------------------------------------------------------------
-void enviarAlPuente(const uint8_t *b, size_t largo, float rssi, float snr) {
-  Serial.print("{\"hex\":\"");
-  for (size_t i = 0; i < largo; i++) Serial.printf("%02X", b[i]);
-  Serial.printf("\",\"rssi\":%ld,\"snr\":%.1f}\n", lroundf(rssi), snr);
-}
-
 void procesarRecepcion() {
   if (!hayPaquete) return;
   hayPaquete = false;
@@ -193,7 +203,7 @@ void procesarRecepcion() {
   }
   recordar(id);
   cuenta.recibidas++;
-  enviarAlPuente(b, largo, rssi, snr);
+  enlaceEntregar(b, largo, rssi, snr);
 
   ultimaTrama.hay = true;
   ultimaTrama.tipo = b[OFFSET_TYPE];
@@ -203,8 +213,7 @@ void procesarRecepcion() {
 
   if (b[OFFSET_TTL] > 1) {
     b[OFFSET_TTL]--;
-    encolar(b, largo, retardoAleatorio());
-    cuenta.retransmitidas++;
+    if (encolar(b, largo, retardoAleatorio())) cuenta.retransmitidas++;
   }
 }
 
@@ -236,89 +245,32 @@ void procesarTransmision() {
   }
 }
 
-// --- Puerto serie (puente de radio) ----------------------------------------------------
-int valorHex(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
-// Acepta {"hex":"..."} (trama por transmitir) y {"ping":1} (latido del puente
-// mientras el panel está conectado); cualquier otra línea se ignora.
-void manejarLinea(const char *linea) {
-  if (strstr(linea, "\"ping\"") != nullptr) {
-    ultimoLatido = millis() | 1;  // | 1: 0 significa «nunca»
-    return;
-  }
-  const char *p = strstr(linea, "\"hex\"");
-  if (p == nullptr) return;
-  p = strchr(p + 5, ':');
-  if (p == nullptr) return;
-  p = strchr(p, '"');
-  if (p == nullptr) return;
-  p++;
-
-  uint8_t datos[MAX_TRAMA];
-  size_t largo = 0;
-  while (largo < MAX_TRAMA) {
-    const int alto = valorHex(p[0]);
-    const int bajo = alto < 0 ? -1 : valorHex(p[1]);
-    if (bajo < 0) break;
-    datos[largo++] = uint8_t(alto << 4 | bajo);
-    p += 2;
-  }
-  if (*p != '"' || largo < LARGO_MINIMO) {
-    Serial.println("# Linea del puente ilegible: se descarta");
-    return;
-  }
-  // La trama del panel se recuerda para no retransmitirla cuando vuelva.
-  recordar(leerMsgId(datos));
-  encolar(datos, largo, 0);
-  cuenta.desdePanel++;
-}
-
-char lineaSerie[2 * MAX_TRAMA + 64];
-size_t largoLinea = 0;
-bool lineaDesbordada = false;
-
-void procesarSerie() {
-  while (Serial.available() > 0) {
-    const char c = char(Serial.read());
-    if (c == '\n') {
-      lineaSerie[largoLinea] = '\0';
-      if (!lineaDesbordada) manejarLinea(lineaSerie);
-      largoLinea = 0;
-      lineaDesbordada = false;
-    } else if (c != '\r') {
-      if (largoLinea < sizeof(lineaSerie) - 1) {
-        lineaSerie[largoLinea++] = c;
-      } else {
-        lineaDesbordada = true;
-      }
-    }
-  }
-}
-
+// --- Estado ----------------------------------------------------------------------------
 void informarEstado() {
   static uint32_t ultimo = 0;
   if (millis() - ultimo < INTERVALO_ESTADO_MS) return;
   ultimo = millis();
   Serial.printf("# Estado: radio=%s recibidas=%lu duplicadas=%lu errores=%lu retransmitidas=%lu "
-                "del_panel=%lu enviadas=%lu fallidas=%lu cola_llena=%lu\n",
+                "del_enlace=%lu enviadas=%lu fallidas=%lu cola_llena=%lu bateria=%d\n",
                 nombreRadio, (unsigned long)cuenta.recibidas, (unsigned long)cuenta.duplicadas,
                 (unsigned long)cuenta.errores, (unsigned long)cuenta.retransmitidas,
-                (unsigned long)cuenta.desdePanel, (unsigned long)cuenta.enviadas,
-                (unsigned long)cuenta.fallidas, (unsigned long)cuenta.colaLlena);
+                (unsigned long)cuenta.delEnlace, (unsigned long)cuenta.enviadas,
+                (unsigned long)cuenta.fallidas, (unsigned long)cuenta.colaLlena, bateria);
 }
 
 void refrescarPantalla() {
   static uint32_t ultimo = 0;
   if (millis() - ultimo < INTERVALO_PANTALLA_MS) return;
   ultimo = millis();
-  EstadoPasarela e;
+  EstadoPantalla e;
+  e.modo = enlaceModo();
+  e.conectado = enlaceConectado();
+  e.textoEnlace = e.conectado ? enlaceTextoConectado() : enlaceTextoDesconectado();
+#ifdef MODO_MODEM
+  e.bateria = bateria;  // la pasarela va por USB: no se muestra
+#endif
   e.radio = nombreRadio;
-  e.panelConectado = ultimoLatido != 0 && millis() - ultimoLatido < PANEL_SIN_LATIDO_MS;
+  e.nombre = enlaceNombre();
   e.recibidas = cuenta.recibidas;
   e.enviadas = cuenta.enviadas;
   e.retransmitidas = cuenta.retransmitidas;
@@ -328,40 +280,55 @@ void refrescarPantalla() {
 
 }  // namespace
 
+// Trama que llega del panel (pasarela) o del teléfono (módem).
+ResultadoEncolado transmitirTrama(const uint8_t *datos, size_t largo) {
+  if (largo < LARGO_MINIMO || largo > MAX_TRAMA) return ResultadoEncolado::invalida;
+  // Se recuerda para no retransmitirla cuando vuelva por la red.
+  recordar(leerMsgId(datos));
+  if (!encolar(datos, largo, 0)) return ResultadoEncolado::colaLlena;
+  cuenta.delEnlace++;
+  return ResultadoEncolado::encolada;
+}
+
 void setup() {
   Serial.setRxBufferSize(1024);
   Serial.begin(BAUDIOS);
   delay(200);
-  Serial.println("# Pasarela LoRa (T-Beam v1.2) iniciando");
+  Serial.printf("# Nodo LoRa (T-Beam v1.2) iniciando en modo %s\n", enlaceModo());
 
-  if (!iniciarEnergia()) {
+  hayPmu = iniciarEnergia();
+  if (!hayPmu) {
     Serial.println("# ERROR: no se encontro el AXP2101; el radio podria quedar sin energia");
   }
   if (pantallaIniciar()) {
-    pantallaMensaje("Iniciando", "Buscando el radio LoRa");
+    pantallaMensaje(enlaceModo(), "Iniciando", "Buscando el radio LoRa");
   } else {
     Serial.println("# Sin pantalla OLED: se continua sin ella");
   }
 
   SPI.begin(PIN_LORA_SCK, PIN_LORA_MISO, PIN_LORA_MOSI, PIN_LORA_CS);
   if (!iniciarSX1262() && !iniciarSX1276()) {
-    pantallaMensaje("Sin radio LoRa", "Revisa la placa y la antena");
+    pantallaMensaje(enlaceModo(), "Sin radio LoRa", "Revisa la placa y la antena");
     while (true) {
       Serial.println("# ERROR: no se encontro el transceptor LoRa (ni SX1262 ni SX1276)");
       delay(5000);
     }
   }
 
+  enlaceIniciar(nombreRadio);
+  leerBateria();
   radio->setPacketReceivedAction(alRecibir);
   escuchar();
-  Serial.printf("# Pasarela lista: %s, %.1f MHz, SF%u, BW %.0f kHz, CR 4/%u, %d dBm\n", nombreRadio,
-                FRECUENCIA_MHZ, FACTOR_DISPERSION, ANCHO_BANDA_KHZ, TASA_CODIGO, POTENCIA_DBM);
+  Serial.printf("# Nodo listo (%s): %s, %.1f MHz, SF%u, BW %.0f kHz, CR 4/%u, %d dBm\n", enlaceModo(),
+                nombreRadio, FRECUENCIA_MHZ, FACTOR_DISPERSION, ANCHO_BANDA_KHZ, TASA_CODIGO,
+                POTENCIA_DBM);
 }
 
 void loop() {
   procesarRecepcion();
-  procesarSerie();
+  enlaceProcesar();
   procesarTransmision();
+  leerBateria();
   informarEstado();
   refrescarPantalla();
 }

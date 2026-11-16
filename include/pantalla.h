@@ -13,9 +13,13 @@ struct UltimaTrama {
   uint32_t momento = 0; // millis() al recibirla
 };
 
-struct EstadoPasarela {
+struct EstadoPantalla {
+  const char *modo = "";          // «PASARELA» o «MÓDEM»
+  bool conectado = false;         // panel (pasarela) o teléfono (módem)
+  const char *textoEnlace = "";   // «Panel conectado», «Sin teléfono», …
+  int bateria = -1;               // % en el encabezado; -1 no se muestra
   const char *radio = "";
-  bool panelConectado = false;
+  const char *nombre = nullptr;   // nombre BLE del módem, si lo tiene
   uint32_t recibidas = 0;
   uint32_t enviadas = 0;
   uint32_t retransmitidas = 0;
@@ -26,7 +30,7 @@ struct EstadoPasarela {
 bool pantallaIniciar();
 
 // Pantalla de mensaje (arranque o error): encabezado, título y una línea.
-void pantallaMensaje(const char *titulo, const char *detalle);
+void pantallaMensaje(const char *modo, const char *titulo, const char *detalle);
 
-// Pantalla principal de la pasarela.
-void pantallaActualizar(const EstadoPasarela &estado);
+// Pantalla principal del nodo.
+void pantallaActualizar(const EstadoPantalla &estado);
