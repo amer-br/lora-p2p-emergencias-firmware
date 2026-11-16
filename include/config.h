@@ -21,6 +21,7 @@ constexpr int8_t POTENCIA_DBM = 17;
 
 // --- Protocolo (SDS, sección 8) ------------------------------------------------
 constexpr uint8_t OFFSET_TTL = 8;          // byte del TTL; está fuera del CRC
+constexpr uint8_t OFFSET_TYPE = 9;
 constexpr size_t LARGO_MINIMO = 10;        // Msg_ID + Sender_ID + TTL + Type
 constexpr size_t MAX_TRAMA = 255;
 
@@ -37,3 +38,9 @@ constexpr size_t COLA_SALIDA = 8;
 // --- Puerto serie con el puente de radio ----------------------------------------
 constexpr uint32_t BAUDIOS = 115200;
 constexpr uint32_t INTERVALO_ESTADO_MS = 30000;
+// El puente envía {"ping":1} cada 10 s mientras el panel está conectado a él.
+// Sin latido durante este tiempo, la pantalla muestra «Panel sin conexión».
+constexpr uint32_t PANEL_SIN_LATIDO_MS = 25000;
+
+// --- Pantalla ------------------------------------------------------------------------
+constexpr uint32_t INTERVALO_PANTALLA_MS = 500;

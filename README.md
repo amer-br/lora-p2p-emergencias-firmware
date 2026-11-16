@@ -23,6 +23,26 @@ El modo módem (enlace BLE con el teléfono) todavía no existe.
   - antes de transmitir, escucha el canal; si está ocupado, espera.
 - **No interpreta el contenido** (SRS, supuesto S1). El CRC-16 del protocolo lo validan el panel y la app; el firmware solo usa el CRC propio de LoRa para descartar paquetes dañados.
 - **Informa su estado:** cada 30 s imprime una línea `# Estado: …` con sus contadores. Las líneas que empiezan con `#` son informativas y el puente las ignora.
+- **Muestra su estado en la pantalla OLED** (ver abajo).
+
+## Pantalla
+
+La pantalla OLED de 128×64 sigue la estructura visual de la app móvil:
+
+![Pantallas de la pasarela](docs/pantalla.png)
+
+| Zona | Qué muestra | Equivalente en la app |
+|------|-------------|-----------------------|
+| Barra superior | «LoRa P2P», antena y el modo («PASARELA») | Barra verde superior |
+| Franja de estado | ● Panel conectado / ○ Panel sin conexión | Franja «● Módem conectado» |
+| Tarjeta | Última trama escuchada: categoría, chip de prioridad (ROJA, AMARILLA, VERDE, ACUSE, CENSO), RSSI, SNR y antigüedad. Una alerta de prioridad roja invierte la tarjeta durante 30 s | Tarjeta de incidente con «Prioridad ROJA» |
+| Barra inferior | Tramas recibidas (Rx), transmitidas (Tx) y retransmitidas (Ret) | Barra de navegación |
+
+- «Panel conectado» depende del **latido** que envía el puente (`{"ping": 1}` cada 10 s) mientras el panel está conectado a él. Si pasan 25 s sin latido, se muestra «Panel sin conexión».
+- La categoría se lee del campo Type solo para mostrarla: no cambia cómo se retransmite la trama.
+- Por omisión se usa el controlador **SSD1306** (pantalla de 0.96"). Si la tuya es de 1.3" (SH1106) y la imagen se ve recorrida 2 píxeles, agrega `-DPANTALLA_SH1106` a `build_flags` en `platformio.ini`.
+- Si la placa no tiene pantalla, el firmware funciona igual sin ella.
+- La imagen de arriba se generó compilando `src/pantalla.cpp` en la PC con la misma biblioteca U8g2, no es una foto de la placa.
 
 ## Grabar la placa
 

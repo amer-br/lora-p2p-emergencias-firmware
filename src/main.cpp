@@ -25,6 +25,7 @@
 #include <XPowersLib.h>
 
 #include "config.h"
+#include "pantalla.h"
 
 #ifndef MODO_PASARELA
 #error "Por ahora solo existe el modo pasarela: compila con -DMODO_PASARELA (pio run -e pasarela)."
@@ -57,6 +58,9 @@ struct Contadores {
   uint32_t recibidas = 0, duplicadas = 0, errores = 0, retransmitidas = 0,
            desdePanel = 0, enviadas = 0, fallidas = 0, colaLlena = 0;
 } cuenta;
+
+UltimaTrama ultimaTrama;
+uint32_t ultimoLatido = 0;  // millis() del último {"ping"} del puente; 0 = nunca
 
 // --- Memoria de Msg_ID ya vistos -------------------------------------------------
 struct Visto {
@@ -191,6 +195,12 @@ void procesarRecepcion() {
   cuenta.recibidas++;
   enviarAlPuente(b, largo, rssi, snr);
 
+  ultimaTrama.hay = true;
+  ultimaTrama.tipo = b[OFFSET_TYPE];
+  ultimaTrama.rssi = int(lroundf(rssi));
+  ultimaTrama.snr = snr;
+  ultimaTrama.momento = millis();
+
   if (b[OFFSET_TTL] > 1) {
     b[OFFSET_TTL]--;
     encolar(b, largo, retardoAleatorio());
@@ -234,8 +244,13 @@ int valorHex(char c) {
   return -1;
 }
 
-// Acepta {"hex":"..."}; cualquier otro campo se ignora.
+// Acepta {"hex":"..."} (trama por transmitir) y {"ping":1} (latido del puente
+// mientras el panel está conectado); cualquier otra línea se ignora.
 void manejarLinea(const char *linea) {
+  if (strstr(linea, "\"ping\"") != nullptr) {
+    ultimoLatido = millis() | 1;  // | 1: 0 significa «nunca»
+    return;
+  }
   const char *p = strstr(linea, "\"hex\"");
   if (p == nullptr) return;
   p = strchr(p + 5, ':');
@@ -297,6 +312,20 @@ void informarEstado() {
                 (unsigned long)cuenta.fallidas, (unsigned long)cuenta.colaLlena);
 }
 
+void refrescarPantalla() {
+  static uint32_t ultimo = 0;
+  if (millis() - ultimo < INTERVALO_PANTALLA_MS) return;
+  ultimo = millis();
+  EstadoPasarela e;
+  e.radio = nombreRadio;
+  e.panelConectado = ultimoLatido != 0 && millis() - ultimoLatido < PANEL_SIN_LATIDO_MS;
+  e.recibidas = cuenta.recibidas;
+  e.enviadas = cuenta.enviadas;
+  e.retransmitidas = cuenta.retransmitidas;
+  e.ultima = ultimaTrama;
+  pantallaActualizar(e);
+}
+
 }  // namespace
 
 void setup() {
@@ -308,9 +337,15 @@ void setup() {
   if (!iniciarEnergia()) {
     Serial.println("# ERROR: no se encontro el AXP2101; el radio podria quedar sin energia");
   }
+  if (pantallaIniciar()) {
+    pantallaMensaje("Iniciando", "Buscando el radio LoRa");
+  } else {
+    Serial.println("# Sin pantalla OLED: se continua sin ella");
+  }
 
   SPI.begin(PIN_LORA_SCK, PIN_LORA_MISO, PIN_LORA_MOSI, PIN_LORA_CS);
   if (!iniciarSX1262() && !iniciarSX1276()) {
+    pantallaMensaje("Sin radio LoRa", "Revisa la placa y la antena");
     while (true) {
       Serial.println("# ERROR: no se encontro el transceptor LoRa (ni SX1262 ni SX1276)");
       delay(5000);
@@ -328,4 +363,5 @@ void loop() {
   procesarSerie();
   procesarTransmision();
   informarEstado();
+  refrescarPantalla();
 }
