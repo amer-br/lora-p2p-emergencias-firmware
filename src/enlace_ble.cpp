@@ -1,5 +1,5 @@
 // Enlace del modo módem: servicio BLE GATT con la app del teléfono
-// (SRS 3.1.2; SDS 8.7). La app y el módem deben usar los mismos UUID.
+// (SRS 3.1.2; SDS 7.7). La app y el módem deben usar los mismos UUID.
 //
 //   Servicio  8f1d0001-6b3a-4c2e-9e5d-2a7c4b9e1f00
 //   TX_FRAME  8f1d0002-…  escritura con respuesta: la app escribe la trama

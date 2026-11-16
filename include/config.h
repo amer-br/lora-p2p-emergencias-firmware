@@ -19,7 +19,7 @@ constexpr uint16_t PREAMBULO = 8;
 // 915 MHz en México antes de subirla (SRS 2.5, restricciones regulatorias).
 constexpr int8_t POTENCIA_DBM = 17;
 
-// --- Protocolo (SDS, sección 8) ------------------------------------------------
+// --- Protocolo (SDS, sección 7) ------------------------------------------------
 constexpr uint8_t OFFSET_TTL = 8;          // byte del TTL; está fuera del CRC
 constexpr uint8_t OFFSET_TYPE = 9;
 constexpr size_t LARGO_MINIMO = 10;        // Msg_ID + Sender_ID + TTL + Type
